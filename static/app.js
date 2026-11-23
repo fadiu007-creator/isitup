@@ -1,14 +1,16 @@
 (function () {
   "use strict";
 
+  const TIMEOUT_MS = 5000;
+  const MAX_URLS = 20;
+
   const form = document.getElementById("check-form");
   const textarea = document.getElementById("urls");
   const submitBtn = document.getElementById("submit");
   const message = document.getElementById("message");
   const output = document.getElementById("output");
   const summary = document.getElementById("summary");
-  const table = document.getElementById("results");
-  const tbody = table.querySelector("tbody");
+  const tbody = document.querySelector("#results tbody");
 
   function showMessage(text, kind) {
     message.textContent = text;
@@ -28,6 +30,98 @@
       .filter((line) => line.length > 0);
   }
 
+  // Accept only http/https URLs, same rule as the Python server.
+  function normalizeUrl(raw) {
+    let parsed;
+    try {
+      parsed = new URL(raw);
+    } catch (e) {
+      return null;
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    return parsed.href;
+  }
+
+  // ---- Check via the Python API (local `python3 -m uptime_checker`) ----
+  async function checkViaApi(urls) {
+    const resp = await fetch("api/check", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ urls: urls }),
+    });
+    const isJson = (resp.headers.get("content-type") || "").includes("application/json");
+    if (!isJson) throw new Error("no API at this address");
+    const data = await resp.json();
+    if (!resp.ok) throw new Error(data.error || "HTTP " + resp.status);
+    if (!data || !Array.isArray(data.results)) throw new Error("unexpected response");
+    return data.results;
+  }
+
+  // ---- Check from the browser (works on GitHub Pages) ----
+  // Tries a CORS request first to read the real HTTP status. If the site
+  // does not allow cross-origin reads, falls back to a no-cors request,
+  // which only tells us whether the site answered at all.
+  async function fetchWithTimeout(url, mode) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
+    try {
+      return await fetch(url, {
+        method: "GET",
+        mode: mode,
+        cache: "no-store",
+        redirect: "follow",
+        signal: controller.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async function checkViaBrowser(url) {
+    const start = performance.now();
+    const elapsed = () => Math.round((performance.now() - start) * 10) / 10;
+    try {
+      const resp = await fetchWithTimeout(url, "cors");
+      const code = resp.status;
+      return {
+        url: url,
+        up: code < 400,
+        status_code: code,
+        response_time_ms: elapsed(),
+        error: code < 400 ? null : "HTTP " + code,
+      };
+    } catch (corsErr) {
+      if (corsErr.name === "AbortError") {
+        return { url: url, up: false, status_code: null, response_time_ms: null, error: "timed out" };
+      }
+      // CORS blocked the read, or the site is down. Ask again without CORS.
+      try {
+        await fetchWithTimeout(url, "no-cors");
+        return {
+          url: url,
+          up: true,
+          status_code: null,
+          response_time_ms: elapsed(),
+          error: "reachable; HTTP status hidden by the site's CORS policy",
+        };
+      } catch (err) {
+        const timedOut = err.name === "AbortError";
+        return {
+          url: url,
+          up: false,
+          status_code: null,
+          response_time_ms: null,
+          error: timedOut ? "timed out" : "unreachable (DNS, TLS, or connection failed)",
+        };
+      }
+    }
+  }
+
+  async function checkAllViaBrowser(urls) {
+    return Promise.all(urls.map(checkViaBrowser));
+  }
+
+  // ---- Rendering ----
   function cell(text, className) {
     const td = document.createElement("td");
     td.textContent = text;
@@ -48,11 +142,7 @@
     const upCount = results.filter((r) => r.up).length;
     const downCount = results.length - upCount;
     summary.replaceChildren();
-    for (const text of [
-      results.length + " checked",
-      upCount + " up",
-      downCount + " down",
-    ]) {
+    for (const text of [results.length + " checked", upCount + " up", downCount + " down"]) {
       const pill = document.createElement("span");
       pill.textContent = text;
       summary.appendChild(pill);
@@ -74,44 +164,49 @@
     output.hidden = results.length === 0;
   }
 
+  // ---- Form handling ----
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
     clearMessage();
 
-    const urls = parseUrls(textarea.value);
-    if (urls.length === 0) {
+    const lines = parseUrls(textarea.value);
+    if (lines.length === 0) {
       showMessage("Please enter at least one website address.", "error");
       return;
+    }
+    if (lines.length > MAX_URLS) {
+      showMessage("Please check at most " + MAX_URLS + " sites at a time.", "error");
+      return;
+    }
+
+    const urls = [];
+    for (const line of lines) {
+      const url = normalizeUrl(line);
+      if (!url) {
+        showMessage("Not a valid http:// or https:// address: " + line, "error");
+        return;
+      }
+      urls.push(url);
     }
 
     submitBtn.disabled = true;
     submitBtn.textContent = "Checking...";
     output.hidden = true;
     try {
-      const resp = await fetch("api/check", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ urls: urls }),
-      });
-      const isJson = (resp.headers.get("content-type") || "").includes("application/json");
-      const data = isJson ? await resp.json() : null;
-
-      if (!resp.ok) {
-        showMessage((data && data.error) || "Request failed (HTTP " + resp.status + ").", "error");
-        return;
+      let results;
+      try {
+        results = await checkViaApi(urls);
+        clearMessage();
+      } catch (apiErr) {
+        // No Python server here (e.g. GitHub Pages). Check from the browser.
+        results = await checkAllViaBrowser(urls);
+        showMessage(
+          "Checked from your browser. For exact HTTP status codes on any site, " +
+            "run the app locally: python3 -m uptime_checker --port 8000",
+          "info"
+        );
       }
-      if (!data || !Array.isArray(data.results)) {
-        showMessage("Unexpected response from the server.", "error");
-        return;
-      }
-      renderResults(data.results);
-    } catch (err) {
-      // Typical on GitHub Pages: there is no Python API behind the static files.
-      showMessage(
-        "Could not reach the checker API (" + err.message + "). " +
-          "Run the app locally with: python3 -m uptime_checker --port 8000",
-        "error"
-      );
+      renderResults(results);
     } finally {
       submitBtn.disabled = false;
       submitBtn.textContent = "Check sites";
