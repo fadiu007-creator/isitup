@@ -30,15 +30,26 @@
       .filter((line) => line.length > 0);
   }
 
-  // Accept only http/https URLs, same rule as the Python server.
+  // Accept HTTP(S) URLs and bare website addresses, defaulting bare hosts to HTTPS.
   function normalizeUrl(raw) {
-    let parsed;
-    try {
-      parsed = new URL(raw);
-    } catch (e) {
-      return null;
+    const value = raw.trim();
+    if (!value || /[\s\u0000-\u001f]/.test(value)) return null;
+    let candidate = value;
+    if (candidate.startsWith("//")) {
+      candidate = "https:" + candidate;
+    } else if (/^[a-z][a-z0-9+.-]*:/i.test(candidate)) {
+      // Keep explicit HTTP(S), and recognize host:port as a bare host.
+      if (!/^https?:\/\//i.test(candidate)) {
+        if (/^(?:[a-z0-9.-]+|\[[0-9a-f:.]+\]):[0-9]+(?:[/?#]|$)/i.test(candidate)) candidate = "https://" + candidate;
+        else return null;
+      }
+    } else {
+      candidate = "https://" + candidate;
     }
+    let parsed;
+    try { parsed = new URL(candidate); } catch (e) { return null; }
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
+    if (!parsed.hostname || parsed.username || parsed.password) return null;
     return parsed.href;
   }
 
