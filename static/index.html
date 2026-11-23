@@ -3,25 +3,42 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Uptime Checker</title>
-  <link rel="stylesheet" href="/style.css">
+  <title>Is it up? · Uptime Checker</title>
+  <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <main>
-    <h1>Uptime Checker</h1>
-    <p class="hint">Enter one URL per line (http:// or https://). Up to 20 sites.</p>
-    <form id="check-form">
-      <textarea id="urls" rows="6" placeholder="https://example.com&#10;https://httpbin.org/status/200"></textarea>
-      <button type="submit" id="submit">Check sites</button>
-    </form>
-    <p id="message" role="alert" class="error" hidden></p>
-    <table id="results" hidden>
-      <thead>
-        <tr><th>URL</th><th>Status</th><th>HTTP</th><th>Time (ms)</th><th>Details</th></tr>
-      </thead>
-      <tbody></tbody>
-    </table>
+    <header>
+      <h1>Is it up?</h1>
+      <p class="subtitle">Paste website addresses, one per line. We'll tell you which are UP or DOWN.</p>
+    </header>
+
+    <section class="card">
+      <form id="check-form">
+        <label for="urls">Websites (up to 20)</label>
+        <textarea id="urls" placeholder="https://example.com&#10;https://httpbin.org/status/200"></textarea>
+        <div class="form-row">
+          <p class="hint">Only http:// and https:// addresses. Each site gets a 5 second timeout.</p>
+          <button type="submit" id="submit">Check sites</button>
+        </div>
+      </form>
+      <div id="message" class="banner error" role="alert" hidden></div>
+    </section>
+
+    <section id="output" hidden>
+      <div class="summary" id="summary"></div>
+      <section class="card">
+        <table class="results" id="results">
+          <thead>
+            <tr><th>Website</th><th>Status</th><th>HTTP</th><th>Response</th><th>Details</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </section>
+    </section>
+
+    <footer>Uptime Checker · a site is UP when it responds with a status below 400</footer>
   </main>
-  <script src="/app.js"></script>
+  <script src="app.js"></script>
 </body>
 </html>
