@@ -7,6 +7,7 @@
   const form = document.getElementById("check-form");
   const textarea = document.getElementById("urls");
   const submitBtn = document.getElementById("submit");
+  const buttonLabel = submitBtn.querySelector("span");
   const message = document.getElementById("message");
   const output = document.getElementById("output");
   const summary = document.getElementById("summary");
@@ -30,26 +31,47 @@
       .filter((line) => line.length > 0);
   }
 
-  // Accept HTTP(S) URLs and bare website addresses, defaulting bare hosts to HTTPS.
+  // Accept URLs, protocol-relative addresses, or bare hosts. Bare hosts use
+  // HTTPS by default. Keep this behavior aligned with checker.validate_url.
   function normalizeUrl(raw) {
     const value = raw.trim();
-    if (!value || /[\s\u0000-\u001f]/.test(value)) return null;
-    let candidate = value;
-    if (candidate.startsWith("//")) {
-      candidate = "https:" + candidate;
-    } else if (/^[a-z][a-z0-9+.-]*:/i.test(candidate)) {
-      // Keep explicit HTTP(S), and recognize host:port as a bare host.
-      if (!/^https?:\/\//i.test(candidate)) {
-        if (/^(?:[a-z0-9.-]+|\[[0-9a-f:.]+\]):[0-9]+(?:[/?#]|$)/i.test(candidate)) candidate = "https://" + candidate;
-        else return null;
-      }
+    if (!value || /[\u0000-\u001f]/.test(value)) return null;
+
+    let candidate;
+    if (value.startsWith("//")) {
+      candidate = "https:" + value;
+    } else if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
+      candidate = value;
+    } else if (/^[a-z][a-z0-9+.-]*:/i.test(value)) {
+      const authority = value.split(/[/?#]/, 1)[0];
+      if (!/^(?:[a-z0-9.-]+|\[[0-9a-f:.]+\]):[0-9]+$/i.test(authority)) return null;
+      candidate = "https://" + value;
     } else {
-      candidate = "https://" + candidate;
+      candidate = "https://" + value;
     }
+
+    // Avoid URL() silently trimming or encoding whitespace that the API-side
+    // validator rejects, so invalid input never enters the fallback checks.
+    if (/\s/.test(candidate)) return null;
     let parsed;
-    try { parsed = new URL(candidate); } catch (e) { return null; }
+    try {
+      parsed = new URL(candidate);
+    } catch (e) {
+      return null;
+    }
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return null;
     if (!parsed.hostname || parsed.username || parsed.password) return null;
+    if (/^\d+(?:\.\d+){3}$/.test(parsed.hostname) && parsed.hostname.split(".").some((part) => Number(part) > 255)) return null;
+    if (/^\d+(?:\.\d+){3}$/.test(parsed.hostname)) {
+      // Valid IPv4 literal.
+    } else if (parsed.hostname.startsWith("[") && parsed.hostname.endsWith("]")) {
+      const ipv6 = parsed.hostname.slice(1, -1);
+      if (!/^[0-9a-f:.]+$/i.test(ipv6) || !ipv6.includes(":")) return null;
+    } else if (!/^(?:\d{1,3}\.){3}\d{1,3}$/.test(parsed.hostname)) {
+      const labels = parsed.hostname.split(".");
+      if (labels.some((label) => !label || label.length > 63 || !/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(label))) return null;
+    }
+    if (parsed.port === "0") return null;
     return parsed.href;
   }
 
@@ -60,71 +82,85 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ urls: urls }),
     });
-    const isJson = (resp.headers.get("content-type") || "").includes("application/json");
+    // GitHub Pages has no /api/check endpoint and returns a static 404; that's
+    // the expected signal to use browser checks. Preserve other HTTP API errors.
+    if (!resp.ok && resp.status !== 404) {
+      const error = new Error("API returned HTTP " + resp.status);
+      error.apiResponse = true;
+      throw error;
+    }
+    if (resp.status === 404) throw new Error("no API at this address");
+    const isJson = (resp.headers.get("content-type") || "").toLowerCase().includes("application/json");
     if (!isJson) throw new Error("no API at this address");
-    const data = await resp.json();
-    if (!resp.ok) throw new Error(data.error || "HTTP " + resp.status);
+    let data;
+    try {
+      data = await resp.json();
+    } catch (err) {
+      throw new Error("API returned invalid JSON");
+    }
     if (!data || !Array.isArray(data.results)) throw new Error("unexpected response");
     return data.results;
   }
 
   // ---- Check from the browser (works on GitHub Pages) ----
-  // Tries a CORS request first to read the real HTTP status. If the site
-  // does not allow cross-origin reads, falls back to a no-cors request,
-  // which only tells us whether the site answered at all.
-  async function fetchWithTimeout(url, mode) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
-    try {
-      return await fetch(url, {
-        method: "GET",
-        mode: mode,
-        cache: "no-store",
-        redirect: "follow",
-        signal: controller.signal,
-      });
-    } finally {
-      clearTimeout(timer);
-    }
+  // Tries a CORS request first to read the real HTTP status. A no-cors
+  // fallback can produce an opaque response, but cannot distinguish HTTP
+  // errors from success, so that result is explicitly UNKNOWN.
+  async function fetchWithTimeout(url, mode, signal) {
+    return fetch(url, {
+      method: "GET",
+      mode: mode,
+      cache: "no-store",
+      redirect: "follow",
+      signal: signal,
+    });
   }
 
   async function checkViaBrowser(url) {
     const start = performance.now();
     const elapsed = () => Math.round((performance.now() - start) * 10) / 10;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), TIMEOUT_MS);
     try {
-      const resp = await fetchWithTimeout(url, "cors");
-      const code = resp.status;
-      return {
-        url: url,
-        up: code < 400,
-        status_code: code,
-        response_time_ms: elapsed(),
-        error: code < 400 ? null : "HTTP " + code,
-      };
-    } catch (corsErr) {
-      if (corsErr.name === "AbortError") {
-        return { url: url, up: false, status_code: null, response_time_ms: null, error: "timed out" };
-      }
-      // CORS blocked the read, or the site is down. Ask again without CORS.
       try {
-        await fetchWithTimeout(url, "no-cors");
+        const resp = await fetchWithTimeout(url, "cors", controller.signal);
+        const code = resp.status;
         return {
           url: url,
-          up: true,
-          status_code: null,
+          up: code < 400,
+          status_code: code,
           response_time_ms: elapsed(),
-          error: "reachable; HTTP status hidden by the site's CORS policy",
+          error: code < 400 ? null : "HTTP " + code,
         };
-      } catch (err) {
-        const timedOut = err.name === "AbortError";
-        return {
-          url: url,
-          up: false,
-          status_code: null,
-          response_time_ms: null,
-          error: timedOut ? "timed out" : "unreachable (DNS, TLS, or connection failed)",
-        };
+      } catch (corsErr) {
+        if (corsErr.name === "AbortError") {
+          return { url: url, up: false, status_code: null, response_time_ms: null, error: "timed out" };
+        }
+        // A no-cors response only establishes that a response arrived. It
+        // cannot distinguish a successful page from an HTTP error.
+        try {
+          const resp = await fetchWithTimeout(url, "no-cors", controller.signal);
+          if (resp.type !== "opaque") throw new Error("unreadable response");
+          return {
+            url: url,
+            up: null,
+            status_code: null,
+            response_time_ms: elapsed(),
+            error: "response received; HTTP status hidden by the site's CORS policy",
+          };
+        } catch (err) {
+          const timedOut = err.name === "AbortError";
+          return {
+            url: url,
+            up: false,
+            status_code: null,
+            response_time_ms: null,
+            error: timedOut ? "timed out" : "unreachable (DNS, TLS, or connection failed)",
+          };
+        }
       }
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -143,17 +179,19 @@
   function statusCell(up) {
     const td = document.createElement("td");
     const badge = document.createElement("span");
-    badge.className = "badge " + (up ? "up" : "down");
-    badge.textContent = up ? "UP" : "DOWN";
+    const state = up === null ? "unknown" : (up ? "up" : "down");
+    badge.className = "badge " + state;
+    badge.textContent = state.toUpperCase();
     td.appendChild(badge);
     return td;
   }
 
   function renderSummary(results) {
-    const upCount = results.filter((r) => r.up).length;
-    const downCount = results.length - upCount;
+    const upCount = results.filter((r) => r.up === true).length;
+    const downCount = results.filter((r) => r.up === false).length;
+    const unknownCount = results.filter((r) => r.up == null).length;
     summary.replaceChildren();
-    for (const text of [results.length + " checked", upCount + " up", downCount + " down"]) {
+    for (const text of [results.length + " checked", upCount + " up", downCount + " down", unknownCount + " unknown"]) {
       const pill = document.createElement("span");
       pill.textContent = text;
       summary.appendChild(pill);
@@ -194,14 +232,14 @@
     for (const line of lines) {
       const url = normalizeUrl(line);
       if (!url) {
-        showMessage("Not a valid http:// or https:// address: " + line, "error");
+        showMessage("Not a valid website address (use a domain or an http(s) URL): " + line, "error");
         return;
       }
       urls.push(url);
     }
 
     submitBtn.disabled = true;
-    submitBtn.textContent = "Checking...";
+    buttonLabel.textContent = "Checking...";
     output.hidden = true;
     try {
       let results;
@@ -209,7 +247,9 @@
         results = await checkViaApi(urls);
         clearMessage();
       } catch (apiErr) {
-        // No Python server here (e.g. GitHub Pages). Check from the browser.
+        // Fall back only when the API is absent/unreachable. Preserve real API
+        // validation and server errors instead of hiding them with a second check.
+        if (apiErr.apiResponse) throw apiErr;
         results = await checkAllViaBrowser(urls);
         showMessage(
           "Checked from your browser. For exact HTTP status codes on any site, " +
@@ -218,9 +258,11 @@
         );
       }
       renderResults(results);
+    } catch (err) {
+      showMessage("Could not check these websites. Please try again. " + (err.message || ""), "error");
     } finally {
       submitBtn.disabled = false;
-      submitBtn.textContent = "Check sites";
+      buttonLabel.textContent = "Check websites";
     }
   });
 })();

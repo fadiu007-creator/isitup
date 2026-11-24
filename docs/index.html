@@ -3,41 +3,56 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Is it up? · Uptime Checker</title>
+  <meta name="theme-color" content="#0a1020">
+  <meta name="description" content="Check whether websites are reachable. Get clear up, down, and unknown results in seconds.">
+  <title>Is it up? — Website status checker</title>
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
-  <main>
-    <header>
-      <h1>Is it up?</h1>
-      <p class="subtitle">Paste website addresses, one per line. We'll tell you which are UP or DOWN.</p>
+  <main class="page-shell">
+    <header class="topbar">
+      <a class="brand" href="./" aria-label="Is it up home"><span class="brand-mark" aria-hidden="true"><span></span></span><span>is it up<span class="brand-dot">.</span></span></a>
+      <span class="topbar-note"><span class="live-dot" aria-hidden="true"></span> Free website checker</span>
     </header>
 
-    <section class="card">
+    <section class="hero" aria-labelledby="page-title">
+      <div class="eyebrow"><span class="eyebrow-line"></span> QUICK CHECK, CLEAR ANSWER</div>
+      <h1 id="page-title">Is your website<br><span>up right now?</span></h1>
+      <p class="hero-copy">Check one site or a whole list. Get a quick read on what’s responding and what isn’t.</p>
+    </section>
+
+    <section class="checker-card" aria-label="Website checker">
       <form id="check-form">
-        <label for="urls">Websites (up to 20)</label>
-        <textarea id="urls" placeholder="https://example.com&#10;https://httpbin.org/status/200"></textarea>
-        <div class="form-row">
-          <p class="hint">Enter a domain or an http:// or https:// address. Bare domains default to HTTPS. Each site gets a 5 second timeout.</p>
-          <button type="submit" id="submit">Check sites</button>
+        <div class="field-heading">
+          <label for="urls">Website addresses</label>
+          <span class="field-limit">UP TO 20 SITES</span>
+        </div>
+        <div class="input-wrap">
+          <span class="input-icon" aria-hidden="true">↗</span>
+          <textarea id="urls" name="urls" rows="4" spellcheck="false" autocapitalize="off" autocomplete="url" aria-describedby="url-hint" placeholder="example.com&#10;https://your-site.com/status"></textarea>
+        </div>
+        <div class="form-bottom">
+          <p class="hint" id="url-hint"><span class="hint-icon" aria-hidden="true">ⓘ</span> One address per line. Bare domains use HTTPS. 5-second timeout per site.</p>
+          <button type="submit" id="submit"><span>Check websites</span><span class="button-arrow" aria-hidden="true">→</span></button>
         </div>
       </form>
-      <div id="message" class="banner error" role="alert" hidden></div>
+      <div id="message" class="banner error" role="status" aria-live="polite" hidden></div>
     </section>
 
-    <section id="output" hidden>
-      <div class="summary" id="summary"></div>
-      <section class="card">
+    <section id="output" class="results-section" aria-live="polite" hidden>
+      <div class="results-heading">
+        <div><div class="section-kicker">CHECK RESULTS</div><h2>Your websites</h2></div>
+        <div class="summary" id="summary"></div>
+      </div>
+      <div class="results-card">
         <table class="results" id="results">
-          <thead>
-            <tr><th>Website</th><th>Status</th><th>HTTP</th><th>Response</th><th>Details</th></tr>
-          </thead>
+          <thead><tr><th>Website</th><th>Status</th><th>HTTP</th><th>Response</th><th>Details</th></tr></thead>
           <tbody></tbody>
         </table>
-      </section>
+      </div>
     </section>
 
-    <footer>Uptime Checker · a site is UP when it responds with a status below 400</footer>
+    <footer class="site-footer"><span class="footer-brand">is it up<span class="brand-dot">.</span></span><span>A quick check, not continuous monitoring.</span><span>UP means HTTP status below 400.</span></footer>
   </main>
   <script src="app.js"></script>
 </body>
